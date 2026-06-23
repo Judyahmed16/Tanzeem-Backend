@@ -12,6 +12,8 @@ namespace Tanzeem.Domain.Entities.Inventories {
     
         public int Id { get; set; }
 
+        public string? ProductNumber { get; set; }
+
         public int? Quantity { get; set; }
 
 

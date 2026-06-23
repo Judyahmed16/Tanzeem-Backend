@@ -12,6 +12,8 @@ namespace Tanzeem.Services.Current {
         public int? UserId => TryGetInt(ClaimTypes.NameIdentifier);
         public int? CompanyId => TryGetInt("CompanyId");
         public int? BranchId => TryGetInt("BranchId");
+        public string? SessionId => httpContextAccessor.HttpContext?.User
+                                     ?.FindFirst("SessionId")?.Value;
         public string? Role => httpContextAccessor.HttpContext?.User
                                      ?.FindFirst(ClaimTypes.Role)?.Value;
 

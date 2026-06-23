@@ -17,6 +17,8 @@ namespace Tanzeem.Domain.Entities.Transactions {
 
         public string TransactionId { get; set; }         // Frontend Id
 
+        public string? TransactionNumber { get; set; }    // Branch-facing number
+
         public TransactionType Type { get; set; }          // In_Out_Adjustment
 
         public DateTime CreatedAt { get; set; }

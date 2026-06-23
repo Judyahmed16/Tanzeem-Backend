@@ -56,6 +56,7 @@ namespace Tanzeem.Persistence.Data.DbContexts {
         public DbSet<Inventory> Inventories { get; set; }
         public DbSet<InventoryBatch> InventoryBatches { get; set; }
         public DbSet<User> Users { get; set; }
+        public DbSet<UserSession> UserSessions { get; set; }
         public DbSet<Order> Order { get; set; }
         public DbSet<OrderItem> OrderItem { get; set; }
         public DbSet<Notification> Notification { get; set; }

@@ -55,7 +55,7 @@ namespace Tanzeem.Services.Orders
 
             #endregion 
             var supplier = await _unitOfWork.GetRepository<Supplier>().GetByIdAsync(orderDto.SupplierId);
-            if (supplier == null)
+            if (supplier == null || supplier.BranchId != branchId)
                 throw new KeyNotFoundException("This supplier id not found");
             
             var productIds = orderDto.Items.Select(i => i.ProductId).Distinct().ToList();

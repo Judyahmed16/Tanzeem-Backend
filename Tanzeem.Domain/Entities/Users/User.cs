@@ -40,6 +40,7 @@ namespace Tanzeem.Domain.Entities.Users {
         #endregion
         public Company Company { get; set; } = default!;
         public ICollection<BranchUserRelationship> BURelations { get; set; } = default!;
+        public ICollection<UserSession> Sessions { get; set; } = new List<UserSession>();
 
         public ICollection<AuditTrial> auditTrials { get; set; } = new List<AuditTrial>();
     }

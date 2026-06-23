@@ -56,6 +56,7 @@ namespace Tanzeem.Services.Products {
 
             return new ProductDto {
                 Id = product.Id,
+                ProductNumber = inventory.ProductNumber ?? BuildProductNumber(branchId, inventory.Id),
                 Name = product.Name,
                 SKU = product.SKU,
                 Category = product.Category?.Name ?? "-",
@@ -76,27 +77,30 @@ namespace Tanzeem.Services.Products {
 
             var products = await productHelperService.GetAllProducts(sortId, filterId, searchQuery);
 
-            return products.Select(product => new ProductDto {
-                Id = product.Id,
-                Name = product.Name,
-                SKU = product.SKU,
-                Category = product.Category?.Name ?? "Uncategorized",
-                CategoryId = product.CategoryId,
-                CostPrice = product.CostPrice,
-                SellingPrice = product.SellingPrice,
-                ExpiryDate = product.ExpiryDate,
-                Barcode = product.Barcode,
-                Description = product.Description,
-                ReorderLevel = product.ReorderLevel,
-                Status = product.Status,
-                Stock = GetBranchBatchQuantity(
-                    product,
-                    currentService.BranchId ?? 0,
-                    product.Inventories
-                        .Where(i => i.BranchId == currentService.BranchId)
-                        .Select(i => i.Quantity)
-                        .FirstOrDefault() ?? 0),
-                Batches = MapBranchBatches(product, currentService.BranchId ?? 0)
+            return products.Select(product => {
+                var inventory = product.Inventories
+                    .FirstOrDefault(i => i.BranchId == currentService.BranchId);
+
+                return new ProductDto {
+                    Id = product.Id,
+                    ProductNumber = inventory?.ProductNumber ?? (inventory is null ? null : BuildProductNumber(inventory.BranchId, inventory.Id)),
+                    Name = product.Name,
+                    SKU = product.SKU,
+                    Category = product.Category?.Name ?? "Uncategorized",
+                    CategoryId = product.CategoryId,
+                    CostPrice = product.CostPrice,
+                    SellingPrice = product.SellingPrice,
+                    ExpiryDate = GetNearestBranchExpiry(product, currentService.BranchId ?? 0) ?? product.ExpiryDate,
+                    Barcode = product.Barcode,
+                    Description = product.Description,
+                    ReorderLevel = product.ReorderLevel,
+                    Status = product.Status,
+                    Stock = GetBranchBatchQuantity(
+                        product,
+                        currentService.BranchId ?? 0,
+                        inventory?.Quantity ?? 0),
+                    Batches = MapBranchBatches(product, currentService.BranchId ?? 0)
+                };
             });
         }
 
@@ -105,29 +109,53 @@ namespace Tanzeem.Services.Products {
             var companyId = currentService.CompanyId
                 ?? throw new UnauthorizedAccessException("CompanyId not found");
 
-            return await _unitOfWork.GetRepository<Product>()
+            var branchId = currentService.BranchId
+                ?? throw new UnauthorizedAccessException("BranchId not found");
+
+            var products = await _unitOfWork.GetRepository<Product>()
                 .GetAllAsIQueryable()
-                .Where(p => p.CompanyId == companyId && (string.IsNullOrEmpty(searchQuery) ||
+                .Where(p => p.CompanyId == companyId
+                    && p.Inventories.Any(i => i.BranchId == branchId)
+                    && (string.IsNullOrEmpty(searchQuery) ||
                     p.Name.Contains(searchQuery) ||
                     p.SKU.Contains(searchQuery) ||
-                    p.Barcode.Contains(searchQuery)
+                    p.Barcode.Contains(searchQuery) ||
+                    p.Inventories.Any(i => i.BranchId == branchId
+                        && i.ProductNumber != null
+                        && i.ProductNumber.Contains(searchQuery))
                 ))
                 .OrderBy(p => p.Name)
                 .ThenBy(p => p.Id)
-                .Select(p => new ProductDropdownMenuDto {
+                .Select(p => new {
                     Id = p.Id,
+                    ProductNumber = p.Inventories
+                        .Where(i => i.BranchId == branchId)
+                        .Select(i => i.ProductNumber)
+                        .FirstOrDefault(),
+                    InventoryId = p.Inventories
+                        .Where(i => i.BranchId == branchId)
+                        .Select(i => i.Id)
+                        .FirstOrDefault(),
                     Name = p.Name,
                     SKU = p.SKU,
                     Barcode = p.Barcode,
                     Stock = p.InventoryBatches
-                              .Where(i => i.BranchId == currentService.BranchId)
+                              .Where(i => i.BranchId == branchId)
                               .Sum(i => i.Quantity),
                     Price = p.SellingPrice
                 })
                 .Take(15)
                 .ToListAsync();
 
-
+            return products.Select(p => new ProductDropdownMenuDto {
+                Id = p.Id,
+                ProductNumber = p.ProductNumber ?? BuildProductNumber(branchId, p.InventoryId),
+                Name = p.Name,
+                SKU = p.SKU,
+                Barcode = p.Barcode,
+                Stock = p.Stock,
+                Price = p.Price
+            });
 
         }
 
@@ -158,7 +186,7 @@ namespace Tanzeem.Services.Products {
 
                 var tranac = await _unitOfWork.BeginTransactionAsync();
                 try {
-                    AddProductToBranch(branchId, existingProduct, productDto.Stock ?? 0, productDto);
+                    await AddProductToBranchAsync(branchId, existingProduct, productDto.Stock ?? 0, productDto);
                     await _unitOfWork.SaveChangesAsync();
                     await tranac.CommitAsync();
                     return existingProduct.Id;
@@ -206,7 +234,7 @@ namespace Tanzeem.Services.Products {
                 else
                     product.Category = category;
 
-                AddProductToBranch(branchId, product, productDto.Stock ?? 0, productDto);
+                await AddProductToBranchAsync(branchId, product, productDto.Stock ?? 0, productDto);
                 await _unitOfWork.GetRepository<Product>().AddAsync(product);
                 await _unitOfWork.SaveChangesAsync();
                 await transc.CommitAsync();
@@ -222,9 +250,10 @@ namespace Tanzeem.Services.Products {
         
         }
     
-        private void AddProductToBranch(int branchId, Product product, int initialQuantity, ProductDto productDto) {
+        private async Task AddProductToBranchAsync(int branchId, Product product, int initialQuantity, ProductDto productDto) {
             product.Inventories ??= new List<Inventory>();
             product.Inventories.Add(new Inventory {
+                ProductNumber = await GenerateProductNumberAsync(branchId),
                 Quantity = initialQuantity,
                 BranchId = branchId
             });
@@ -488,6 +517,7 @@ namespace Tanzeem.Services.Products {
             var productsToInsert = new List<Product>();
             var inventoriesToInsert = new List<Inventory>();
             var inventoryBatchesToInsert = new List<InventoryBatch>();
+            var nextProductSequence = await GetNextProductSequenceAsync(branchId);
 
             while (csv.Read())
             {
@@ -607,6 +637,7 @@ namespace Tanzeem.Services.Products {
                     {
                         Product = product,
                         BranchId = branchId,
+                        ProductNumber = BuildProductNumber(branchId, nextProductSequence++),
                         Quantity = quantity 
                     };
                     inventoriesToInsert.Add(inventory);
@@ -646,6 +677,36 @@ namespace Tanzeem.Services.Products {
 
             return productsToInsert.Count;
         }
+
+        private async Task<string> GenerateProductNumberAsync(int branchId)
+            => BuildProductNumber(branchId, await GetNextProductSequenceAsync(branchId));
+
+        private async Task<int> GetNextProductSequenceAsync(int branchId)
+        {
+            var prefix = BuildNumberPrefix(branchId, "PRD");
+            var productNumbers = await _unitOfWork.GetRepository<Inventory>()
+                .GetAllAsIQueryable()
+                .Where(i => i.BranchId == branchId && i.ProductNumber != null && i.ProductNumber.StartsWith(prefix))
+                .Select(i => i.ProductNumber!)
+                .ToListAsync();
+
+            return productNumbers
+                .Select(number => TryReadSequence(number, prefix))
+                .DefaultIfEmpty(0)
+                .Max() + 1;
+        }
+
+        private static string BuildProductNumber(int branchId, int sequence)
+            => $"{BuildNumberPrefix(branchId, "PRD")}{Math.Max(sequence, 1):D4}";
+
+        private static string BuildNumberPrefix(int branchId, string type)
+            => $"B{branchId:D3}-{type}-";
+
+        private static int TryReadSequence(string value, string prefix)
+            => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(value[prefix.Length..], out var sequence)
+                    ? sequence
+                    : 0;
 
     }
 }

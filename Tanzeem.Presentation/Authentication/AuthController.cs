@@ -5,8 +5,10 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Tanzeem.Domain.Constants;
 using Tanzeem.Domain.Exceptions;
@@ -17,7 +19,7 @@ namespace Tanzeem.Presentation.Authentication {
 
     [ApiController]
     [Route("api/[controller]")]
-    public class AuthController(IAuthService authService) : ControllerBase {
+    public class AuthController(IAuthService authService, IHttpClientFactory httpClientFactory) : ControllerBase {
 
 
         [HttpPost]
@@ -33,6 +35,69 @@ namespace Tanzeem.Presentation.Authentication {
         {
             var result = await authService.ChangePasswordAsync(dto);
             return Ok(new { success = result });
+        }
+
+        [HttpGet("sessions")]
+        [Authorize]
+        public async Task<IActionResult> GetSessions()
+        {
+            var sessions = await authService.GetSessionsAsync();
+            return Ok(sessions);
+        }
+
+        [HttpDelete("sessions/{sessionId:int}")]
+        [Authorize]
+        public async Task<IActionResult> RevokeSession(int sessionId)
+        {
+            var result = await authService.RevokeSessionAsync(sessionId);
+            return Ok(new { success = result });
+        }
+
+        [HttpPost("logout")]
+        [Authorize]
+        public async Task<IActionResult> Logout()
+        {
+            var result = await authService.RevokeCurrentSessionAsync();
+            return Ok(new { success = result });
+        }
+
+        [HttpGet("session-location")]
+        [Authorize]
+        public async Task<IActionResult> GetSessionLocation([FromQuery] string ip)
+        {
+            if (!IsPublicIpAddress(ip))
+                return Ok(new { label = "Unknown location" });
+
+            var client = httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(5);
+
+            try
+            {
+                var response = await client.GetAsync($"https://ipwho.is/{Uri.EscapeDataString(ip)}");
+                response.EnsureSuccessStatusCode();
+                using var stream = await response.Content.ReadAsStreamAsync();
+                using var document = await JsonDocument.ParseAsync(stream);
+                var root = document.RootElement;
+
+                if (root.TryGetProperty("success", out var success) && success.GetBoolean())
+                {
+                    var label = string.Join(", ", new[]
+                    {
+                        GetJsonString(root, "city"),
+                        GetJsonString(root, "region"),
+                        GetJsonString(root, "country")
+                    }.Where(value => !string.IsNullOrWhiteSpace(value)));
+
+                    if (!string.IsNullOrWhiteSpace(label))
+                        return Ok(new { label });
+                }
+            }
+            catch
+            {
+                // Keep the sessions page usable even when the public lookup service is down.
+            }
+
+            return Ok(new { label = "Location unavailable" });
         }
 
         [HttpPost("forget-password/request")]
@@ -65,6 +130,35 @@ namespace Tanzeem.Presentation.Authentication {
                     message = "An unexpected error occurred. Please try again later."
                 });
             }
+        }
+
+        private static string? GetJsonString(JsonElement element, string propertyName)
+        {
+            return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null;
+        }
+
+        private static bool IsPublicIpAddress(string? value)
+        {
+            if (!IPAddress.TryParse(value, out var ipAddress))
+                return false;
+
+            if (IPAddress.IsLoopback(ipAddress))
+                return false;
+
+            if (ipAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                var bytes = ipAddress.GetAddressBytes();
+                if (bytes[0] == 10 || bytes[0] == 127 || bytes[0] == 169 && bytes[1] == 254)
+                    return false;
+                if (bytes[0] == 192 && bytes[1] == 168)
+                    return false;
+                if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+                    return false;
+            }
+
+            return true;
         }
 
         [HttpPost("forget-password/verify-otp")]

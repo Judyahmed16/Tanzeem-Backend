@@ -30,6 +30,7 @@ namespace Tanzeem.Services.Suppliers
         {
             //int companyId = 4;
             int companyId = _currentService.CompanyId ?? throw new UnauthorizedAccessException("No company id assigned"); 
+            int branchId = _currentService.BranchId ?? throw new UnauthorizedAccessException("No branch id assigned");
 
             #region validation dto 
             if (supplierDto is null)
@@ -40,11 +41,12 @@ namespace Tanzeem.Services.Suppliers
 
             var isDuplicate = await _unitOfWork.GetRepository<Supplier>().GetAllAsIQueryable()
                     .AnyAsync(s => s.CompanyId == companyId &&
+                      s.BranchId == branchId &&
                       (s.Email == supplierDto.Email.Trim() ||
                       (!string.IsNullOrEmpty(supplierDto.Tax_Id) && s.Tax_Id == supplierDto.Tax_Id.Trim())));
 
             if (isDuplicate)
-                throw new BusinessRuleException("A supplier with the same email or tax ID already exists in this company.");
+                throw new BusinessRuleException("A supplier with the same email or tax ID already exists in this branch.");
             
             string cleanPhone = supplierDto.PhoneNumberOne.Replace(" ", "").Replace("-", "");
             string cleanPhone2 = supplierDto?.PhoneNumberTwo?.Replace(" ", "").Replace("-", "") ?? "-";
@@ -57,7 +59,7 @@ namespace Tanzeem.Services.Suppliers
 
 
             var lastSupplier = await _unitOfWork.GetRepository<Supplier>().GetAllAsIQueryable()
-                .Where(s => s.CompanyId == companyId)
+                .Where(s => s.CompanyId == companyId && s.BranchId == branchId)
                 .OrderByDescending(s => s.Id)
                 .FirstOrDefaultAsync();
 
@@ -89,6 +91,7 @@ namespace Tanzeem.Services.Suppliers
                 ContactPersonName = supplierDto.ContactPersonName?.Trim(),
                 SupplierStatus = supplierDto.SupplierStatus,
                 CompanyId = companyId,
+                BranchId = branchId,
                 SupplierNumber = generatedSupplierNumber
             };
             #endregion
@@ -105,10 +108,11 @@ namespace Tanzeem.Services.Suppliers
         {
             //int companyId = 4;
             int companyId = _currentService.CompanyId ?? throw new UnauthorizedAccessException("No company id assigned"); 
+            int branchId = _currentService.BranchId ?? throw new UnauthorizedAccessException("No branch id assigned");
 
             var supplierToDelete = await _unitOfWork.GetRepository<Supplier>().GetByIdAsync(id);
 
-            if (supplierToDelete == null || supplierToDelete.CompanyId != companyId)
+            if (supplierToDelete == null || supplierToDelete.CompanyId != companyId || supplierToDelete.BranchId != branchId)
             {
                 throw new KeyNotFoundException("this supplier not found");
             }
@@ -129,6 +133,7 @@ namespace Tanzeem.Services.Suppliers
         {
             //int companyId = 4;
             int companyId = _currentService.CompanyId ?? throw new UnauthorizedAccessException("No company id assigned"); 
+            int branchId = _currentService.BranchId ?? throw new UnauthorizedAccessException("No branch id assigned");
 
             if (page <= 0) page = 1;
 
@@ -137,7 +142,7 @@ namespace Tanzeem.Services.Suppliers
             if (pageSize > maxPageSize) pageSize = maxPageSize;
 
             var query = _unitOfWork.GetRepository<Supplier>().GetAllAsIQueryable()
-                .Where(supplier => supplier.CompanyId ==companyId);
+                .Where(supplier => supplier.CompanyId == companyId && supplier.BranchId == branchId);
 
             if (supplierFilter.HasValue)
             {
@@ -192,10 +197,10 @@ namespace Tanzeem.Services.Suppliers
                         query = query.OrderByDescending(s => s.City);
                         break;
                     case SupplierSort.HighOrdersCount:
-                        query = query.OrderByDescending(s => s.Orders.Count());
+                        query = query.OrderByDescending(s => s.Orders.Count(o => o.BranchId == branchId));
                         break;
                     case SupplierSort.LowOrdersCount:
-                        query = query.OrderBy(s => s.Orders.Count());
+                        query = query.OrderBy(s => s.Orders.Count(o => o.BranchId == branchId));
                         break;
                 }
 
@@ -206,7 +211,7 @@ namespace Tanzeem.Services.Suppliers
             }
 
             var suppliersFromDb = await query
-            .Include(s => s.Orders)
+            .Include(s => s.Orders.Where(o => o.BranchId == branchId))
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync();
@@ -252,12 +257,13 @@ namespace Tanzeem.Services.Suppliers
         {
             //int companyId = 4;
             int companyId = _currentService.CompanyId ?? throw new UnauthorizedAccessException("No company id assigned"); 
+            int branchId = _currentService.BranchId ?? throw new UnauthorizedAccessException("No branch id assigned");
 
             var supplier = await _unitOfWork.GetRepository<Supplier>().GetByIdAsQueryable(id)
-                .Include(s => s.Orders)
+                .Include(s => s.Orders.Where(o => o.BranchId == branchId))
                 .FirstOrDefaultAsync();
 
-            if (supplier == null || supplier.CompanyId != companyId)
+            if (supplier == null || supplier.CompanyId != companyId || supplier.BranchId != branchId)
             {
                 throw new KeyNotFoundException("No supplier with this id");
             }
@@ -294,6 +300,7 @@ namespace Tanzeem.Services.Suppliers
         {
             //int companyId = 4;
             int companyId = _currentService.CompanyId ?? throw new UnauthorizedAccessException("No company id assigned"); 
+            int branchId = _currentService.BranchId ?? throw new UnauthorizedAccessException("No branch id assigned");
 
             if (supplierDto is null)
                 throw new ValidationException("Empty fields");
@@ -313,17 +320,18 @@ namespace Tanzeem.Services.Suppliers
             
             var isDuplicate = await _unitOfWork.GetRepository<Supplier>().GetAllAsIQueryable()
                         .AnyAsync(s => s.CompanyId == companyId &&
+                       s.BranchId == branchId &&
                        s.Id != id &&
                        ((!string.IsNullOrEmpty(emailToCheck) && s.Email == emailToCheck) ||
                         (!string.IsNullOrEmpty(taxIdToCheck) && s.Tax_Id == taxIdToCheck)));
 
             if (isDuplicate)
-                throw new BusinessRuleException("A supplier with the same email or tax ID already exists in this company.");
+                throw new BusinessRuleException("A supplier with the same email or tax ID already exists in this branch.");
 
 
             var supplierToUpdate = await _unitOfWork.GetRepository<Supplier>().GetByIdAsync(id);
 
-            if (supplierToUpdate == null || supplierToUpdate.CompanyId != companyId)
+            if (supplierToUpdate == null || supplierToUpdate.CompanyId != companyId || supplierToUpdate.BranchId != branchId)
             {
                 throw new KeyNotFoundException("this supplier not found");
             }
@@ -360,9 +368,10 @@ namespace Tanzeem.Services.Suppliers
         {
             //int companyId = 4;
             int companyId = _currentService.CompanyId ?? throw new UnauthorizedAccessException("No company id assigned"); 
+            int branchId = _currentService.BranchId ?? throw new UnauthorizedAccessException("No branch id assigned");
 
             var query = _unitOfWork.GetRepository<Supplier>().GetAllAsIQueryable()
-                .Where(x => x.CompanyId == companyId && x.SupplierStatus == SupplierStatus.Active);
+                .Where(x => x.CompanyId == companyId && x.BranchId == branchId && x.SupplierStatus == SupplierStatus.Active);
 
             if (!string.IsNullOrWhiteSpace(searchTerm))
             {
@@ -387,10 +396,11 @@ namespace Tanzeem.Services.Suppliers
         {
             //int companyId = 4;
             int companyId = _currentService.CompanyId ?? throw new UnauthorizedAccessException("No company id assigned"); 
+            int branchId = _currentService.BranchId ?? throw new UnauthorizedAccessException("No branch id assigned");
 
             var baseQuery = _unitOfWork.GetRepository<Supplier>()
                 .GetAllAsIQueryable()
-                .Where(s => s.CompanyId == companyId);
+                .Where(s => s.CompanyId == companyId && s.BranchId == branchId);
 
             int activeCount = await baseQuery.CountAsync(s => s.SupplierStatus == SupplierStatus.Active);
             int inactiveCount = await baseQuery.CountAsync(s => s.SupplierStatus == SupplierStatus.InActive);
@@ -409,6 +419,7 @@ namespace Tanzeem.Services.Suppliers
                 throw new ValidationException("Please upload a valid CSV file.");
 
             int companyId = _currentService.CompanyId ?? throw new UnauthorizedAccessException("No company assigned.");
+            int branchId = _currentService.BranchId ?? throw new UnauthorizedAccessException("No branch assigned.");
 
             var config = new CsvConfiguration(CultureInfo.InvariantCulture)
             {
@@ -429,14 +440,14 @@ namespace Tanzeem.Services.Suppliers
             int rowIndex = 1;
             var validationErrors = new List<string>();
             var existingEmails = await _unitOfWork.GetRepository<Supplier>().GetAllAsIQueryable()
-            .Where(s => s.CompanyId == companyId && !string.IsNullOrEmpty(s.Email) && s.Email != "N/A")
+            .Where(s => s.CompanyId == companyId && s.BranchId == branchId && !string.IsNullOrEmpty(s.Email) && s.Email != "N/A")
             .Select(s => s.Email.ToLower())
             .ToListAsync();
             var emailsInCsv = new HashSet<string>();
 
             #region generate supplier number
             var lastSupplier = await _unitOfWork.GetRepository<Supplier>().GetAllAsIQueryable()
-            .Where(s => s.CompanyId == companyId)
+            .Where(s => s.CompanyId == companyId && s.BranchId == branchId)
             .OrderByDescending(s => s.Id)
             .FirstOrDefaultAsync();
 
@@ -558,7 +569,8 @@ namespace Tanzeem.Services.Suppliers
                     Notes = string.IsNullOrWhiteSpace(Notes) ? "N/A" : Notes,
                     SupplierStatus = parsedStatus,
                     
-                    CompanyId = companyId
+                    CompanyId = companyId,
+                    BranchId = branchId
                 };
                 nextNumber++;
                 suppliersToInsert.Add(supplier);

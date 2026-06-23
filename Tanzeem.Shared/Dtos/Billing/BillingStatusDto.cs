@@ -17,8 +17,12 @@ public class BillingStatusDto
 public class BillingPaymentMethodDto
 {
     public string Id { get; set; } = string.Empty;
+    public string Type { get; set; } = "card";
     public string Brand { get; set; } = string.Empty;
     public string Last4 { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string? Wallet { get; set; }
     public int? ExpMonth { get; set; }
     public int? ExpYear { get; set; }
+    public bool IsDefault { get; set; }
 }

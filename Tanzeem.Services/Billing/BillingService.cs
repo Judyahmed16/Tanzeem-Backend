@@ -28,7 +28,7 @@ public class BillingService(
         var company = await GetCurrentCompanyWithSubscriptionAsync();
         var subscription = company.Subscription;
         var paymentMethods = !string.IsNullOrWhiteSpace(company.StripeCustomerId) && IsStripeConfigured()
-            ? await GetCustomerPaymentMethodsAsync(company.StripeCustomerId)
+            ? await GetBillingPaymentMethodsAsync(company, subscription)
             : [];
 
         return new BillingStatusDto
@@ -436,7 +436,68 @@ public class BillingService(
         };
     }
 
-    private async Task<IReadOnlyList<BillingPaymentMethodDto>> GetCustomerPaymentMethodsAsync(string customerId)
+    private async Task<IReadOnlyList<BillingPaymentMethodDto>> GetBillingPaymentMethodsAsync(
+        Company company,
+        Subscription? subscription)
+    {
+        var methods = new List<BillingPaymentMethodDto>();
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+        var customerId = company.StripeCustomerId;
+
+        if (string.IsNullOrWhiteSpace(customerId))
+            return methods;
+
+        if (!string.IsNullOrWhiteSpace(subscription?.StripeSubscriptionId))
+        {
+            try
+            {
+                using var subscriptionJson = await GetStripeAsync(
+                    $"subscriptions/{Uri.EscapeDataString(subscription.StripeSubscriptionId)}?expand%5B%5D=default_payment_method&expand%5B%5D=latest_invoice.payment_intent.payment_method");
+
+                await AddPaymentMethodFromPropertyAsync(methods, seenIds, subscriptionJson.RootElement, "default_payment_method", true);
+
+                if (TryGetNestedProperty(
+                    subscriptionJson.RootElement,
+                    out var latestInvoicePaymentMethod,
+                    "latest_invoice",
+                    "payment_intent",
+                    "payment_method"))
+                {
+                    await AddPaymentMethodFromElementAsync(methods, seenIds, latestInvoicePaymentMethod, true);
+                }
+            }
+            catch
+            {
+                // A stale Stripe subscription id should not make the billing page unusable.
+            }
+        }
+
+        try
+        {
+            using var customerJson = await GetStripeAsync(
+                $"customers/{Uri.EscapeDataString(customerId)}?expand%5B%5D=invoice_settings.default_payment_method");
+
+            if (TryGetNestedProperty(
+                customerJson.RootElement,
+                out var invoiceDefaultPaymentMethod,
+                "invoice_settings",
+                "default_payment_method"))
+            {
+                await AddPaymentMethodFromElementAsync(methods, seenIds, invoiceDefaultPaymentMethod, true);
+            }
+        }
+        catch
+        {
+            // Fall back to the customer payment method collection below.
+        }
+
+        foreach (var method in await GetCustomerCardPaymentMethodsAsync(customerId))
+            AddPaymentMethod(methods, seenIds, method);
+
+        return methods;
+    }
+
+    private async Task<IReadOnlyList<BillingPaymentMethodDto>> GetCustomerCardPaymentMethodsAsync(string customerId)
     {
         using var json = await GetStripeAsync($"customers/{Uri.EscapeDataString(customerId)}/payment_methods?type=card&limit=5");
 
@@ -445,19 +506,139 @@ public class BillingService(
 
         return data.EnumerateArray()
             .Where(item => item.TryGetProperty("card", out var card) && card.ValueKind == JsonValueKind.Object)
-            .Select(item =>
-            {
-                var card = item.GetProperty("card");
-                return new BillingPaymentMethodDto
-                {
-                    Id = ReadString(item, "id") ?? string.Empty,
-                    Brand = ReadString(card, "brand") ?? "Card",
-                    Last4 = ReadString(card, "last4") ?? string.Empty,
-                    ExpMonth = ReadInt(card, "exp_month"),
-                    ExpYear = ReadInt(card, "exp_year")
-                };
-            })
+            .Select(item => MapStripePaymentMethod(item, false))
             .ToList();
+    }
+
+    private async Task AddPaymentMethodFromPropertyAsync(
+        List<BillingPaymentMethodDto> methods,
+        HashSet<string> seenIds,
+        JsonElement owner,
+        string propertyName,
+        bool isDefault)
+    {
+        if (owner.TryGetProperty(propertyName, out var property))
+            await AddPaymentMethodFromElementAsync(methods, seenIds, property, isDefault);
+    }
+
+    private async Task AddPaymentMethodFromElementAsync(
+        List<BillingPaymentMethodDto> methods,
+        HashSet<string> seenIds,
+        JsonElement element,
+        bool isDefault)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            AddPaymentMethod(methods, seenIds, MapStripePaymentMethod(element, isDefault));
+            return;
+        }
+
+        if (element.ValueKind != JsonValueKind.String)
+            return;
+
+        var paymentMethodId = element.GetString();
+        if (string.IsNullOrWhiteSpace(paymentMethodId))
+            return;
+
+        using var paymentMethodJson = await GetStripeAsync($"payment_methods/{Uri.EscapeDataString(paymentMethodId)}");
+        AddPaymentMethod(methods, seenIds, MapStripePaymentMethod(paymentMethodJson.RootElement, isDefault));
+    }
+
+    private static void AddPaymentMethod(
+        List<BillingPaymentMethodDto> methods,
+        HashSet<string> seenIds,
+        BillingPaymentMethodDto method)
+    {
+        if (string.IsNullOrWhiteSpace(method.Id))
+        {
+            methods.Add(method);
+            return;
+        }
+
+        if (seenIds.Add(method.Id))
+        {
+            methods.Add(method);
+            return;
+        }
+
+        var existing = methods.FirstOrDefault(item => item.Id == method.Id);
+        if (existing is not null)
+            existing.IsDefault = existing.IsDefault || method.IsDefault;
+    }
+
+    private static BillingPaymentMethodDto MapStripePaymentMethod(JsonElement item, bool isDefault)
+    {
+        var type = ReadString(item, "type") ?? "payment_method";
+        var id = ReadString(item, "id") ?? string.Empty;
+
+        if (string.Equals(type, "card", StringComparison.OrdinalIgnoreCase) &&
+            item.TryGetProperty("card", out var card) &&
+            card.ValueKind == JsonValueKind.Object)
+        {
+            var brand = ReadString(card, "brand") ?? "Card";
+            var last4 = ReadString(card, "last4") ?? string.Empty;
+            var wallet = card.TryGetProperty("wallet", out var walletElement) && walletElement.ValueKind == JsonValueKind.Object
+                ? ReadString(walletElement, "type")
+                : null;
+            var isLinkCard = string.Equals(wallet, "link", StringComparison.OrdinalIgnoreCase);
+
+            return new BillingPaymentMethodDto
+            {
+                Id = id,
+                Type = type,
+                Brand = isLinkCard ? "Link" : brand,
+                Last4 = last4,
+                DisplayName = isLinkCard
+                    ? string.IsNullOrWhiteSpace(last4) ? "Link payment" : $"Link card ending {last4}"
+                    : string.IsNullOrWhiteSpace(last4) ? ToTitleCase(brand) : $"{ToTitleCase(brand)} ending {last4}",
+                Wallet = wallet,
+                ExpMonth = ReadInt(card, "exp_month"),
+                ExpYear = ReadInt(card, "exp_year"),
+                IsDefault = isDefault
+            };
+        }
+
+        return new BillingPaymentMethodDto
+        {
+            Id = id,
+            Type = type,
+            Brand = ToTitleCase(type),
+            DisplayName = string.Equals(type, "link", StringComparison.OrdinalIgnoreCase)
+                ? "Link payment"
+                : $"{ToTitleCase(type)} payment method",
+            IsDefault = isDefault
+        };
+    }
+
+    private static bool TryGetNestedProperty(JsonElement element, out JsonElement value, params string[] propertyNames)
+    {
+        value = element;
+
+        foreach (var propertyName in propertyNames)
+        {
+            if (value.ValueKind != JsonValueKind.Object ||
+                !value.TryGetProperty(propertyName, out value) ||
+                value.ValueKind == JsonValueKind.Null)
+            {
+                value = default;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string ToTitleCase(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "Payment";
+
+        var normalized = value.Trim().Replace("_", " ");
+        return string.Join(
+            " ",
+            normalized
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => char.ToUpperInvariant(part[0]) + part[1..].ToLowerInvariant()));
     }
 
     private bool IsStripeConfigured()

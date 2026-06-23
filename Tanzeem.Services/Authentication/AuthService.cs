@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Identity;
+﻿using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
@@ -28,7 +29,9 @@ using Tanzeem.Shared.Dtos.Users;
 namespace Tanzeem.Services.Authentication {
     public class AuthService(IUnitOfWork unitOfWork,
         ICurrentService currentService,
-        IOptions<JwtOptions> options, IConfiguration configuration) : IAuthService {
+        IOptions<JwtOptions> options,
+        IConfiguration configuration,
+        IHttpContextAccessor httpContextAccessor) : IAuthService {
         
         private const int OTP_EXPIRY_MINUTES = 10;
         private const int MAX_FAILED_ATTEMPTS = 3;
@@ -78,7 +81,37 @@ namespace Tanzeem.Services.Authentication {
                 throw new BusinessRuleException("Email or password is incorrect!");
             }
 
-            var token = await AuthHelper.GenerateToken(user, options, unitOfWork);
+            var now = DateTime.UtcNow;
+            var userAgent = TrimToLength(GetUserAgent(), 512);
+            var ipAddress = TrimToLength(GetIpAddress(), 64);
+            var duplicateWindowStart = now.AddSeconds(-10);
+
+            var session = await unitOfWork.GetRepository<UserSession>()
+                .GetAllAsIQueryable()
+                .Where(s =>
+                    s.UserId == user.Id &&
+                    s.RevokedAt == null &&
+                    s.ExpiresAt > now &&
+                    s.CreatedAt >= duplicateWindowStart &&
+                    s.UserAgent == userAgent &&
+                    s.IpAddress == ipAddress)
+                .OrderByDescending(s => s.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (session is null)
+            {
+                session = CreateSession(user, now, userAgent, ipAddress);
+                await unitOfWork.GetRepository<UserSession>().AddAsync(session);
+            }
+            else
+            {
+                session.LastSeenAt = now;
+                unitOfWork.GetRepository<UserSession>().UpdateAsync(session);
+            }
+
+            await unitOfWork.SaveChangesAsync();
+
+            var token = await AuthHelper.GenerateToken(user, options, unitOfWork, session.SessionKey);
 
             return token;
         }
@@ -103,6 +136,71 @@ namespace Tanzeem.Services.Authentication {
             user.PasswordHash = hasher.HashPassword(user, dto.NewPassword);
 
             unitOfWork.GetRepository<User>().UpdateAsync(user);
+            await unitOfWork.SaveChangesAsync();
+
+            return true;
+        }
+
+        public async Task<IReadOnlyList<UserSessionDto>> GetSessionsAsync()
+        {
+            var userId = currentService.UserId
+                ?? throw new UnauthorizedAccessException("User not authenticated.");
+            var currentSessionKey = currentService.SessionId;
+            var now = DateTime.UtcNow;
+
+            return await unitOfWork.GetRepository<UserSession>()
+                .GetAllAsIQueryable()
+                .Where(s => s.UserId == userId && s.RevokedAt == null && s.ExpiresAt > now)
+                .OrderByDescending(s => s.LastSeenAt)
+                .Select(s => new UserSessionDto
+                {
+                    Id = s.Id,
+                    DeviceName = s.DeviceName,
+                    IpAddress = s.IpAddress,
+                    UserAgent = s.UserAgent,
+                    CreatedAt = s.CreatedAt,
+                    LastSeenAt = s.LastSeenAt,
+                    ExpiresAt = s.ExpiresAt,
+                    RevokedAt = s.RevokedAt,
+                    IsCurrent = s.SessionKey == currentSessionKey,
+                    IsActive = s.RevokedAt == null && s.ExpiresAt > now
+                })
+                .ToListAsync();
+        }
+
+        public async Task<bool> RevokeSessionAsync(int sessionId)
+        {
+            var userId = currentService.UserId
+                ?? throw new UnauthorizedAccessException("User not authenticated.");
+
+            var session = await unitOfWork.GetRepository<UserSession>()
+                .GetAsync(s => s.Id == sessionId && s.UserId == userId);
+
+            if (session is null)
+                throw new BusinessRuleException("Session not found.");
+
+            RevokeSession(session, "Revoked by user");
+            unitOfWork.GetRepository<UserSession>().UpdateAsync(session);
+            await unitOfWork.SaveChangesAsync();
+
+            return true;
+        }
+
+        public async Task<bool> RevokeCurrentSessionAsync()
+        {
+            var userId = currentService.UserId
+                ?? throw new UnauthorizedAccessException("User not authenticated.");
+            var sessionKey = currentService.SessionId
+                ?? throw new BusinessRuleException("Current token is not linked to a login session.");
+
+            var session = await unitOfWork.GetRepository<UserSession>()
+                .GetAsync(s => s.SessionKey == sessionKey && s.UserId == userId);
+
+            if (session is null)
+                throw new BusinessRuleException("Current session not found.");
+
+            RevokeSession(session, "Signed out");
+            unitOfWork.GetRepository<UserSession>().UpdateAsync(session);
             await unitOfWork.SaveChangesAsync();
 
             return true;
@@ -453,6 +551,88 @@ namespace Tanzeem.Services.Authentication {
             }
         }
         #endregion
+
+        private UserSession CreateSession(User user, DateTime now, string? userAgent, string? ipAddress)
+        {
+            var jwtOptions = options.Value;
+
+            return new UserSession
+            {
+                SessionKey = Guid.NewGuid().ToString("N"),
+                UserId = user.Id,
+                DeviceName = DetectDeviceName(userAgent),
+                UserAgent = userAgent,
+                IpAddress = ipAddress,
+                CreatedAt = now,
+                LastSeenAt = now,
+                ExpiresAt = now.AddDays(jwtOptions.DurationInDays)
+            };
+        }
+
+        private static void RevokeSession(UserSession session, string reason)
+        {
+            if (session.RevokedAt is not null)
+                return;
+
+            session.RevokedAt = DateTime.UtcNow;
+            session.RevokedReason = reason;
+        }
+
+        private string? GetUserAgent()
+        {
+            return httpContextAccessor.HttpContext?.Request.Headers.UserAgent.ToString();
+        }
+
+        private string? GetIpAddress()
+        {
+            var request = httpContextAccessor.HttpContext?.Request;
+            var forwardedFor = request?.Headers["X-Forwarded-For"].ToString();
+            if (!string.IsNullOrWhiteSpace(forwardedFor))
+                return forwardedFor.Split(',')[0].Trim();
+
+            var realIp = request?.Headers["X-Real-IP"].ToString();
+            if (!string.IsNullOrWhiteSpace(realIp))
+                return realIp.Trim();
+
+            return httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString();
+        }
+
+        private static string DetectDeviceName(string? userAgent)
+        {
+            if (string.IsNullOrWhiteSpace(userAgent))
+                return "Unknown device";
+
+            var lower = userAgent.ToLowerInvariant();
+
+            var browser = lower switch
+            {
+                var value when value.Contains("edg/") => "Edge",
+                var value when value.Contains("chrome/") || value.Contains("crios/") => "Chrome",
+                var value when value.Contains("firefox/") || value.Contains("fxios/") => "Firefox",
+                var value when value.Contains("safari/") => "Safari",
+                _ => "Browser"
+            };
+
+            var platform = lower switch
+            {
+                var value when value.Contains("iphone") => "iPhone",
+                var value when value.Contains("ipad") => "iPad",
+                var value when value.Contains("android") => "Android",
+                var value when value.Contains("mac os") || value.Contains("macintosh") => "Mac",
+                var value when value.Contains("windows") => "Windows",
+                _ => "device"
+            };
+
+            return $"{browser} on {platform}";
+        }
+
+        private static string? TrimToLength(string? value, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            return value.Length <= maxLength ? value : value[..maxLength];
+        }
     }
 
 }

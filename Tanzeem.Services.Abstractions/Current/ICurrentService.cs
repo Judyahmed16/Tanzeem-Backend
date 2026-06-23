@@ -10,6 +10,7 @@ namespace Tanzeem.Services.Abstractions.Current {
         int? UserId { get; }
         int? CompanyId { get; }
         int? BranchId { get; }
+        string? SessionId { get; }
         string? Role { get; }
 
     }

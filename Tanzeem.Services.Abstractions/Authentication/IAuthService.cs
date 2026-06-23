@@ -16,6 +16,9 @@ namespace Tanzeem.Services.Abstractions.Authentication {
         public  Task<bool> VerifyOtpAsync(VerifyOtpDto dto);
         public Task<bool> ConfirmResetPasswordAsync(ConfirmResetPasswordDto dto);
         public Task<bool> DeleteAccountFullyAsync();
+        Task<IReadOnlyList<UserSessionDto>> GetSessionsAsync();
+        Task<bool> RevokeSessionAsync(int sessionId);
+        Task<bool> RevokeCurrentSessionAsync();
     }
 }
 

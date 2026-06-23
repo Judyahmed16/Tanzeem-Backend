@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using System.Security.Claims;
 using System.Text;
 using Tanzeem.Domain.Contracts;
 using Tanzeem.Domain.Entities.AIDemand;
@@ -124,6 +125,38 @@ namespace Tanzeem.Web {
                         ValidAudience = jwtOptions.Audience,
                         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SecurityKey))
                     };
+                    options.Events = new JwtBearerEvents
+                    {
+                        OnTokenValidated = async context =>
+                        {
+                            var sessionKey = context.Principal?.FindFirst("SessionId")?.Value;
+                            var userIdValue = context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+                            if (string.IsNullOrWhiteSpace(sessionKey) ||
+                                !int.TryParse(userIdValue, out var userId))
+                            {
+                                context.Fail("Login session is missing.");
+                                return;
+                            }
+
+                            var dbContext = context.HttpContext.RequestServices.GetRequiredService<TanzeemDbContext>();
+                            var now = DateTime.UtcNow;
+                            var session = await dbContext.UserSessions
+                                .FirstOrDefaultAsync(s => s.SessionKey == sessionKey && s.UserId == userId);
+
+                            if (session is null || session.RevokedAt != null || session.ExpiresAt <= now)
+                            {
+                                context.Fail("Login session is no longer active.");
+                                return;
+                            }
+
+                            if (session.LastSeenAt <= now.AddMinutes(-5))
+                            {
+                                session.LastSeenAt = now;
+                                await dbContext.SaveChangesAsync();
+                            }
+                        }
+                    };
                 });
 
             #endregion
@@ -235,8 +268,9 @@ namespace Tanzeem.Web {
             app.UseSwagger();
             app.UseSwaggerUI(options => {
                 options.SwaggerEndpoint("/swagger/v1/swagger.json", "V1");
-                options.RoutePrefix = string.Empty;
+                options.RoutePrefix = "swagger";
             });
+            app.MapGet("/", () => Results.Redirect("/swagger"));
 
             #endregion
 

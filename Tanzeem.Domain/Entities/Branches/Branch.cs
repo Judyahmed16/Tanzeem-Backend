@@ -11,6 +11,7 @@ using Tanzeem.Domain.Entities.Inventories;
 using Tanzeem.Domain.Entities.Notifications;
 using Tanzeem.Domain.Entities.Orders;
 using Tanzeem.Domain.Entities.Settings;
+using Tanzeem.Domain.Entities.Suppliers;
 using Tanzeem.Domain.Entities.Transactions;
 using Tanzeem.Domain.Enums;
 
@@ -47,6 +48,7 @@ namespace Tanzeem.Domain.Entities.Branches {
 
         public ICollection<Order> Orders { get; set; } = new List<Order>();
         public ICollection<Notification> Notifications { get; set; } = new List<Notification>();
+        public ICollection<Supplier> Suppliers { get; set; } = new List<Supplier>();
         
 
         public AlertConfigurations AlertConfigurations { get; set; }

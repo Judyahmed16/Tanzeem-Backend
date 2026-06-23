@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Tanzeem.Domain.AuditLogs;
 using Tanzeem.Domain.Contracts;
+using Tanzeem.Domain.Entities.Branches;
 using Tanzeem.Domain.Entities.Companies;
 using Tanzeem.Domain.Entities.DeliveryIssues;
 using Tanzeem.Domain.Entities.Orders;
@@ -36,10 +37,12 @@ namespace Tanzeem.Domain.Entities.Suppliers
         public ICollection<DeliveryIssue> DeliveryIssues { get; set; } = new List<DeliveryIssue>();
         
         public Company Company { get; set; }
+        public Branch Branch { get; set; }
 
         #region Relations
         #endregion
         public int CompanyId { get; set; }
+        public int BranchId { get; set; }
        
     }
 }

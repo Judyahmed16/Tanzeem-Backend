@@ -14,6 +14,12 @@ namespace Tanzeem.Persistence.Data.Configurations.InventoryConfigurations {
             builder.Property(x => x.Quantity)
                 .HasColumnType("int");
 
+            builder.Property(x => x.ProductNumber)
+                .HasMaxLength(32);
+
+            builder.HasIndex(x => new { x.BranchId, x.ProductNumber })
+                .IsUnique()
+                .HasFilter("[ProductNumber] IS NOT NULL");
 
             builder.HasOne(i => i.Product)
                 .WithMany(p => p.Inventories)

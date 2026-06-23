@@ -19,7 +19,7 @@ namespace Tanzeem.Persistence.Data.Configurations.SupplierConfigurations
             builder.Property(x => x.FullName).IsRequired();
             
             builder.Property(x => x.Email).IsRequired().HasMaxLength(150);
-            builder.HasIndex(x => x.Email).IsUnique();
+            builder.HasIndex(x => new { x.BranchId, x.Email }).IsUnique();
 
             builder.Property(x => x.PhoneNumberOne).IsRequired().HasMaxLength(20);
             builder.Property(x => x.PhoneNumberTwo).HasMaxLength(20);
@@ -34,6 +34,7 @@ namespace Tanzeem.Persistence.Data.Configurations.SupplierConfigurations
             builder.Property(o => o.SupplierNumber).HasDefaultValue("Old-Record");
 
             builder.HasOne(x => x.Company).WithMany(x => x.Suppliers).HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Restrict);
+            builder.HasOne(x => x.Branch).WithMany(x => x.Suppliers).HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
                 
         }
     }

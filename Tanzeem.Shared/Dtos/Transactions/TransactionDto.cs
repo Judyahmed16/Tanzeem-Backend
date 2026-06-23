@@ -10,6 +10,7 @@ namespace Tanzeem.Shared.Dtos.Transactions {
 
         public int Id { get; set; }
         public string TransactionId { get; set; }
+        public string? TransactionNumber { get; set; }
 
         public TransactionType Type { get; set; }          // In_Out_Adjustment
 

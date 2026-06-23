@@ -106,7 +106,7 @@ namespace Tanzeem.Services.BusinessCore {
             }
 
             var user = await unitOfWork.GetRepository<User>().GetAsync(u => u.Id == adminId);
-            return await AuthHelper.GenerateToken(user!, jwtOptions, unitOfWork);
+            return await AuthHelper.GenerateToken(user!, jwtOptions, unitOfWork, currentService.SessionId);
         }
 
         public async Task<UserProfileDto> GetUserProfileAsync() {

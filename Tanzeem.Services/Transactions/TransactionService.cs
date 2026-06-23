@@ -109,13 +109,18 @@ namespace Tanzeem.Services.Transactions {
                     };
                 }).ToList();
 
+                var totalTransactedItems = transactionDto.Type == TransactionType.Adjustment
+                    ? transactionItems.Sum(x => Math.Abs(x.QuantityOfTransactedItem))
+                    : transactionItems.Sum(x => x.QuantityOfTransactedItem);
+
                 var transaction = new Transaction {
                     TransactionId = Guid.NewGuid().ToString(),
+                    TransactionNumber = await GenerateTransactionNumberAsync(branchId),
                     Type = transactionDto.Type,
                     CreatedAt = transactionDto.CreatedAt,
                     Status = transactionDto.Status,
                     Value = transactionItems.Sum(x => x.UnitPrice * x.QuantityOfTransactedItem),
-                    TotalTransactedItems = transactionItems.Sum(x => x.QuantityOfTransactedItem),
+                    TotalTransactedItems = totalTransactedItems,
                     SourceReason = transactionDto.SourceReason,
                     ReferenceNumber = transactionDto.ReferenceNumber,
                     Notes = transactionDto.Notes,
@@ -132,6 +137,8 @@ namespace Tanzeem.Services.Transactions {
                     await InTransactionAsync(transactionDto.TransactionItemDtos, transactionItems, inventories, inventoryBatches);
                 else if (transactionDto.Type == TransactionType.Out)
                     OutTransaction(transactionItems, inventories, inventoryBatches);
+                else if (transactionDto.Type == TransactionType.Adjustment)
+                    await AdjustmentTransactionAsync(transactionDto.TransactionItemDtos, transactionItems, inventories, inventoryBatches);
 
                 #endregion
 
@@ -176,6 +183,7 @@ namespace Tanzeem.Services.Transactions {
                 BranchId = branchId,
                 PerformedByUserId = userId,
                 TransactionId = Guid.NewGuid().ToString(),
+                TransactionNumber = await GenerateTransactionNumberAsync(branchId),
                 CreatedAt = receivedDate,
                 SourceReason = TransactionSource.Supplier,
                 TransactionItems = transactionItems,
@@ -229,6 +237,7 @@ namespace Tanzeem.Services.Transactions {
             return new TransactionDto {
                 Id = transaction.Id,
                 TransactionId = transaction.TransactionId,
+                TransactionNumber = transaction.TransactionNumber ?? BuildTransactionNumber(branchId, transaction.Id),
                 Type = transaction.Type,
                 CreatedAt = transaction.CreatedAt,
                 Status = transaction.Status,
@@ -289,7 +298,61 @@ namespace Tanzeem.Services.Transactions {
                     throw new InvalidOperationException(
                         $"Insufficient stock for '{item.Product.Name}'. Available: {availableBatchQuantity}, Requested: {item.QuantityOfTransactedItem}.");
 
-                item.UnitCost = ConsumeBatches(item, inventoryBatches);
+                item.UnitCost = ConsumeBatches(
+                    item.Product.Id,
+                    item.Product.Name,
+                    item.BatchNumber,
+                    item.QuantityOfTransactedItem,
+                    inventoryBatches);
+                inventory.Quantity = inventoryBatches
+                    .Where(batch => batch.ProductId == item.Product.Id)
+                    .Sum(batch => batch.Quantity);
+            }
+        }
+
+        private async Task AdjustmentTransactionAsync(
+            List<TransactionItemDto> itemDtos,
+            List<TransactionItem> transactionItems,
+            List<Inventory> inventories,
+            List<InventoryBatch> inventoryBatches) {
+            foreach (var item in transactionItems) {
+                var inventory = inventories.FirstOrDefault(inv => inv.ProductId == item.Product.Id)
+                    ?? throw new KeyNotFoundException(
+                        $"Inventory record not found for product '{item.Product.Name}' (SKU: {item.Product.SKU}).");
+
+                if (item.QuantityOfTransactedItem == 0)
+                    throw new InvalidOperationException(
+                        $"Adjustment quantity for '{item.Product.Name}' cannot be zero.");
+
+                if (item.QuantityOfTransactedItem > 0) {
+                    item.UnitCost = item.UnitPrice;
+                    var itemDto = itemDtos.First(x => x.Product.SKU == item.Product.SKU);
+                    var batch = new InventoryBatch
+                    {
+                        ProductId = item.Product.Id,
+                        BranchId = inventory.BranchId,
+                        BatchNumber = string.IsNullOrWhiteSpace(item.BatchNumber)
+                            ? $"ADJ-{DateTime.UtcNow:yyyyMMddHHmmss}"
+                            : item.BatchNumber.Trim(),
+                        Quantity = item.QuantityOfTransactedItem,
+                        ExpiryDate = itemDto.ExpiryDate ?? item.Product.ExpiryDate,
+                        CostPrice = item.UnitPrice,
+                        ReceivedAt = DateTime.UtcNow
+                    };
+
+                    await _unitOfWork.GetRepository<InventoryBatch>().AddAsync(batch);
+                    inventoryBatches.Add(batch);
+                }
+                else {
+                    var quantityToRemove = Math.Abs(item.QuantityOfTransactedItem);
+                    item.UnitCost = ConsumeBatches(
+                        item.Product.Id,
+                        item.Product.Name,
+                        item.BatchNumber,
+                        quantityToRemove,
+                        inventoryBatches);
+                }
+
                 inventory.Quantity = inventoryBatches
                     .Where(batch => batch.ProductId == item.Product.Id)
                     .Sum(batch => batch.Quantity);
@@ -302,19 +365,24 @@ namespace Tanzeem.Services.Transactions {
                 .Where(batch => string.IsNullOrWhiteSpace(item.BatchNumber) || batch.BatchNumber == item.BatchNumber)
                 .Sum(batch => batch.Quantity);
 
-        private static decimal ConsumeBatches(TransactionItem item, List<InventoryBatch> inventoryBatches)
+        private static decimal ConsumeBatches(
+            int productId,
+            string productName,
+            string? batchNumber,
+            int quantity,
+            List<InventoryBatch> inventoryBatches)
         {
-            var remaining = item.QuantityOfTransactedItem;
+            var remaining = quantity;
             decimal consumedCost = 0;
             var candidateBatches = inventoryBatches
-                .Where(batch => batch.ProductId == item.Product.Id && batch.Quantity > 0)
-                .Where(batch => string.IsNullOrWhiteSpace(item.BatchNumber) || batch.BatchNumber == item.BatchNumber)
+                .Where(batch => batch.ProductId == productId && batch.Quantity > 0)
+                .Where(batch => string.IsNullOrWhiteSpace(batchNumber) || batch.BatchNumber == batchNumber)
                 .OrderBy(batch => batch.ExpiryDate ?? DateTime.MaxValue)
                 .ThenBy(batch => batch.ReceivedAt)
                 .ToList();
 
             if (!candidateBatches.Any())
-                throw new InvalidOperationException($"No available batch stock found for '{item.Product.Name}'.");
+                throw new InvalidOperationException($"No available batch stock found for '{productName}'.");
 
             foreach (var batch in candidateBatches)
             {
@@ -328,11 +396,11 @@ namespace Tanzeem.Services.Transactions {
 
             if (remaining > 0)
                 throw new InvalidOperationException(
-                    $"Insufficient batch stock for '{item.Product.Name}'. Remaining shortage: {remaining}.");
+                    $"Insufficient batch stock for '{productName}'. Remaining shortage: {remaining}.");
 
-            return item.QuantityOfTransactedItem <= 0
+            return quantity <= 0
                 ? 0
-                : consumedCost / item.QuantityOfTransactedItem;
+                : consumedCost / quantity;
         }
 
         private async Task LowStockAlertAsync(
@@ -340,7 +408,11 @@ namespace Tanzeem.Services.Transactions {
             List<TransactionItem> transactionItems,
             List<Inventory> inventories) {
             try {
-                if (transaction.Type != TransactionType.Out) return;
+                var canReduceStock = transaction.Type == TransactionType.Out
+                    || (transaction.Type == TransactionType.Adjustment
+                        && transactionItems.Any(item => item.QuantityOfTransactedItem < 0));
+
+                if (!canReduceStock) return;
 
                 // inventories is already branch-scoped from CreateTransactionAsync — match by ProductId only
                 var lowStockItems = transactionItems
@@ -359,6 +431,38 @@ namespace Tanzeem.Services.Transactions {
                 // TODO: plug into your logger here → _logger.LogError(ex, "LowStockAlert failed for TransactionId: {id}", transaction.Id)
             }
         }
+
+        private async Task<string> GenerateTransactionNumberAsync(int branchId)
+            => BuildTransactionNumber(branchId, await GetNextTransactionSequenceAsync(branchId));
+
+        private async Task<int> GetNextTransactionSequenceAsync(int branchId)
+        {
+            var prefix = BuildNumberPrefix(branchId, "TRX");
+            var transactionNumbers = await _unitOfWork.GetRepository<Transaction>()
+                .GetAllAsIQueryable()
+                .Where(t => t.BranchId == branchId
+                    && t.TransactionNumber != null
+                    && t.TransactionNumber.StartsWith(prefix))
+                .Select(t => t.TransactionNumber!)
+                .ToListAsync();
+
+            return transactionNumbers
+                .Select(number => TryReadSequence(number, prefix))
+                .DefaultIfEmpty(0)
+                .Max() + 1;
+        }
+
+        private static string BuildTransactionNumber(int branchId, int sequence)
+            => $"{BuildNumberPrefix(branchId, "TRX")}{Math.Max(sequence, 1):D4}";
+
+        private static string BuildNumberPrefix(int branchId, string type)
+            => $"B{branchId:D3}-{type}-";
+
+        private static int TryReadSequence(string value, string prefix)
+            => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(value[prefix.Length..], out var sequence)
+                    ? sequence
+                    : 0;
 
         #endregion
     

@@ -20,7 +20,7 @@ namespace Tanzeem.Services.Authentication {
     public static class AuthHelper{
 
         public static async Task<string> GenerateToken(User user, IOptions<JwtOptions> options
-            , IUnitOfWork unitOfWork) {
+            , IUnitOfWork unitOfWork, string? sessionId = null) {
 
             var jwtOptions = options.Value;
             var primaryBranch = await unitOfWork.GetRepository<BranchUserRelationship>()
@@ -35,6 +35,11 @@ namespace Tanzeem.Services.Authentication {
                 new Claim("CompanyId", user.CompanyId?.ToString() ?? "0"),
                 new Claim("BranchId", primaryBranch?.BranchId.ToString() ?? "0")
             };
+
+            if (!string.IsNullOrWhiteSpace(sessionId))
+            {
+                authClaims.Add(new Claim("SessionId", sessionId));
+            }
 
             var key = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(jwtOptions.SecurityKey));
