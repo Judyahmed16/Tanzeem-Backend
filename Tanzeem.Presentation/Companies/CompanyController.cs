@@ -23,6 +23,14 @@ namespace Tanzeem.Presentation.Companies {
             return Ok(result);
         }
 
+        [HttpGet]
+        [Route("Get-Current-Company")]
+        [Authorize(Roles = "Admin, Manager, Staff")]
+        public async Task<IActionResult> GetCurrentCompanyReadOnly() {
+            var result = await companyService.GetCompanyAsync();
+            return Ok(result);
+        }
+
         [HttpPut]
         [Route("Update-Company")]
         [Authorize(Roles = "Admin")]
