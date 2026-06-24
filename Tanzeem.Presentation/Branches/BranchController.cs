@@ -23,6 +23,14 @@ namespace Tanzeem.Presentation.Branches {
         }
 
         [HttpGet]
+        [Route("Get-Current-Branch")]
+        [Authorize(Roles = "Admin, Manager, Staff")]
+        public async Task<IActionResult> GetCurrentBranch() {
+            var branch = await branchService.GetCurrentBranchAsync();
+            return Ok(branch);
+        }
+
+        [HttpGet]
         [Route("Get-Branches")]
         [Authorize(Roles = "Admin")]
         public async Task<IActionResult> GetBranches() {

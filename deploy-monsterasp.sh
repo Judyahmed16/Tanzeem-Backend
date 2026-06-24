@@ -48,6 +48,7 @@ find "$PUBLISH_DIR" -type f -print0 | while IFS= read -r -d '' file; do
   remote_path="${remote_url}${rel}"
   echo "Uploading ${rel}"
   curl --fail --silent --show-error --ftp-create-dirs \
+    --retry 5 --retry-delay 2 --retry-all-errors \
     --user "${MONSTERASP_FTP_USER}:${MONSTERASP_FTP_PASS}" \
     --upload-file "$file" \
     "$remote_path" >/dev/null

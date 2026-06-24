@@ -10,6 +10,8 @@ namespace Tanzeem.Services.Abstractions.Branches {
 
         Task<BranchDto> GetBranchAsync(int branchId);
 
+        Task<BranchDto> GetCurrentBranchAsync();
+
         Task<List<BranchDto>> GetCompanyBranchesAsync();
         
         Task<List<BranchesMenuDto>> GetBranchesList();
@@ -24,4 +26,3 @@ namespace Tanzeem.Services.Abstractions.Branches {
     }
 
 }
-

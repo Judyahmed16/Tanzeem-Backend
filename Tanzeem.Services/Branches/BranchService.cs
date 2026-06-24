@@ -26,6 +26,24 @@ namespace Tanzeem.Services.Branches {
             return MapToBranchDto(branch);
         }
 
+        public async Task<BranchDto> GetCurrentBranchAsync() {
+
+            var branchId = currentService.BranchId
+                ?? throw new UnauthorizedAccessException("No branch assigned.");
+            var companyId = currentService.CompanyId;
+
+            var branch = await _unitOfWork.GetRepository<Branch>()
+                .GetAllAsIQueryable()
+                .FirstOrDefaultAsync(b => b.Id == branchId && (!companyId.HasValue || b.CompanyId == companyId.Value));
+
+            if (branch is null)
+                throw new Exception("Branch not found.");
+            if (branch.Status != BranchStatus.Active)
+                throw new BusinessRuleException("Branch is not active.");
+
+            return MapToBranchDto(branch);
+        }
+
         public async Task<List<BranchDto>> GetCompanyBranchesAsync() {
 
             var companyId = currentService.CompanyId;
