@@ -84,19 +84,20 @@ namespace Tanzeem.Services.Authentication {
             var now = DateTime.UtcNow;
             var userAgent = TrimToLength(GetUserAgent(), 512);
             var ipAddress = TrimToLength(GetIpAddress(), 64);
-            var duplicateWindowStart = now.AddSeconds(-10);
+            var jwtOptions = options.Value;
 
-            var session = await unitOfWork.GetRepository<UserSession>()
+            var matchingSessions = await unitOfWork.GetRepository<UserSession>()
                 .GetAllAsIQueryable()
                 .Where(s =>
                     s.UserId == user.Id &&
                     s.RevokedAt == null &&
                     s.ExpiresAt > now &&
-                    s.CreatedAt >= duplicateWindowStart &&
                     s.UserAgent == userAgent &&
                     s.IpAddress == ipAddress)
                 .OrderByDescending(s => s.CreatedAt)
-                .FirstOrDefaultAsync();
+                .ToListAsync();
+
+            var session = matchingSessions.FirstOrDefault();
 
             if (session is null)
             {
@@ -105,8 +106,16 @@ namespace Tanzeem.Services.Authentication {
             }
             else
             {
+                session.SessionKey = Guid.NewGuid().ToString("N");
                 session.LastSeenAt = now;
+                session.ExpiresAt = now.AddDays(jwtOptions.DurationInDays);
                 unitOfWork.GetRepository<UserSession>().UpdateAsync(session);
+
+                foreach (var duplicateSession in matchingSessions.Skip(1))
+                {
+                    RevokeSession(duplicateSession, "Replaced by newer login");
+                    unitOfWork.GetRepository<UserSession>().UpdateAsync(duplicateSession);
+                }
             }
 
             await unitOfWork.SaveChangesAsync();
