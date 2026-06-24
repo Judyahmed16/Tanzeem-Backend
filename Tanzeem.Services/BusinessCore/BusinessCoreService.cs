@@ -197,6 +197,9 @@ namespace Tanzeem.Services.BusinessCore {
 
         public async Task<bool> UpdateEmployeeAsync(int employeeId, EmployeeUpdateDto updatedEmployeeDto) {
 
+            if (updatedEmployeeDto.Role == UserRoles.Admin)
+                throw new BusinessRuleException("Cannot assign Admin role to an employee.");
+
             var employee = await unitOfWork.GetRepository<User>()
                 .GetAsync(u => u.Id == employeeId && u.Role != UserRoles.Admin);
 
